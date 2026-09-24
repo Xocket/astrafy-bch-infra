@@ -1,0 +1,126 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - "**.tf"
+      - "**.tfvars"
+      - "**/.terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+      - ".pre-commit-config.yaml"
+      - "Makefile"
+  push:
+    branches:
+      - main
+    paths:
+      - "**.tf"
+      - "**.tfvars"
+      - "**/.terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+      - ".pre-commit-config.yaml"
+      - "Makefile"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.16.4"
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize bootstrap configuration
+        run: terraform -chdir=bootstrap init -backend=false -input=false
+
+      - name: Validate bootstrap configuration
+        run: terraform -chdir=bootstrap validate
+
+      - name: Initialize primary configuration
+        run: terraform init -backend=false -input=false
+
+      - name: Validate primary configuration
+        run: terraform validate
+
+  plan:
+    name: Read-only plan
+    if: github.event_name != 'pull_request' && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_ENVIRONMENT: ${{ vars.TF_ENVIRONMENT || 'dev' }}
+      TF_VAR_environment: ${{ vars.TF_ENVIRONMENT || 'dev' }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_project_name: ${{ vars.GCP_PROJECT_NAME }}
+      TF_VAR_organization_id: ${{ vars.GCP_ORGANIZATION_ID }}
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
+      TF_VAR_state_project_id: ${{ vars.GCP_STATE_PROJECT_ID }}
+      TF_VAR_state_bucket_name: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_terraform_plan_service_account_email: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
+      TF_VAR_github_repository_owner: ${{ vars.REPOSITORY_OWNER }}
+      TF_VAR_github_dbt_repository: ${{ vars.DBT_REPOSITORY }}
+      TF_VAR_github_infrastructure_repository: ${{ vars.INFRASTRUCTURE_REPOSITORY }}
+      # Lifecycle flags are environment decisions; the defaults match the
+      # applied dev environment so a CI plan shows no phantom diffs.
+      TF_VAR_deletion_protection: ${{ vars.TF_DELETION_PROTECTION || 'false' }}
+      TF_VAR_delete_dataset_contents_on_destroy: ${{ vars.TF_DELETE_DATASET_CONTENTS || 'true' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.16.4"
+          terraform_wrapper: false
+
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
+          audience: sts.googleapis.com
+
+      - name: Initialize remote backend
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="prefix=astrafy-bch-analytics/${TF_ENVIRONMENT}"
+
+      - name: Create read-only plan
+        run: >-
+          terraform plan
+          -input=false
+          -lock=false
+          -out=tfplan
+
+      - name: Render plan artifact
+        run: terraform show -no-color tfplan > plan.txt
+
+      - name: Upload reviewed plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: terraform-plan-${{ env.TF_ENVIRONMENT }}
+          path: plan.txt
+          if-no-files-found: error
+          retention-days: 14

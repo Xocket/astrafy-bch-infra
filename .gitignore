@@ -1,0 +1,38 @@
+# Terraform working directories and local state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+*.tfplan.*
+
+# Variable files containing local values
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Credentials and local environment
+.terraformrc
+terraform.rc
+gha-creds-*.json
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Tooling
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+tmp/
